@@ -51,7 +51,7 @@ public class ClinicalTrialsController {
 
     private String molecularMatchURL;
 
-    @Value("${mm.url:https://api.molecularmatch.com/v1/search/trials}")
+    @Value("${mm.url:https://api.molecularmatch.com/v2/search/trials}")
     public void setMolecularMatchURL(String property) {
 
         this.molecularMatchURL = property;
