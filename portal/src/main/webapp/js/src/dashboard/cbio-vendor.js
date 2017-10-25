@@ -592,6 +592,8 @@ cbio.util = (function() {
     values.sort(function(a, b) {
       return a - b;
     });
+    
+    
 
     /* Then find a generous IQR. This is generous because if (values.length / 4) 
      * is not an int, then really you should average the two elements on either 
@@ -599,16 +601,20 @@ cbio.util = (function() {
      */
     var q1 = values[Math.floor((values.length / 4))];
     // Likewise for q3. 
-    var q3 = values[(Math.ceil((values.length * (3 / 4))) > values.length - 1 ? values.length - 1 : Math.ceil((values.length * (3 / 4))))];
+    var q3 = values[(Math.floor(values.length * (3 / 4)))];
     var iqr = q3 - q1;
+
     if (values[Math.ceil((values.length * (1 / 2)))] < 0.001) {
       smallDataFlag = true;
     }
     // Then find min and max values
     var maxValue, minValue;
-    if (q3 < 1) {
-      maxValue = Number((q3 + iqr * 1.5).toFixed(2));
-      minValue = Number((q1 - iqr * 1.5).toFixed(2));
+    if (0.001 <= q3 && q3 < 1) {
+      maxValue = Number((q3 + iqr * 1.5).toFixed(3));
+      minValue = Number((q1 - iqr * 1.5).toFixed(3));
+    } else if(q3 < 0.001){// get IQR for very small number(<0.001)
+      maxValue = Number((q3 + iqr * 1.5));
+      minValue = Number((q1 - iqr * 1.5));
     } else {
       maxValue = Math.ceil(q3 + iqr * 1.5);
       minValue = Math.floor(q1 - iqr * 1.5);
@@ -637,7 +643,7 @@ cbio.util = (function() {
       }
     }
 
-    return [minValue, maxValue, smallDataFlag];
+    return [minValue, maxValue, smallDataFlag, values, iqr];
   }
 
   function getDatahubStudiesList() {
@@ -669,6 +675,60 @@ cbio.util = (function() {
     return def.promise();
   }
 
+
+  function getDecimalExponents(data){
+    //Copy the values, rather than operating on references to existing values
+    if (!_.isArray(data) || data.length < 1) {//if data is not an array or is empty, return data
+      return data;
+    }
+
+    var values = [];
+    var minZeros = 0, maxZeros = 0;
+    var head, tail;
+    var expoents = [];
+
+    _.each(data, function(item) {
+      if (!isNaN(item)) {
+        values.push(Number(item));
+      }
+    });
+
+    // Then sort
+    values.sort(function(a, b) {
+      return a - b;
+    });
+
+    //make sure that min and max values are greater than 0.
+    for (head = 0; head < values.length; head++){
+      if (values[head] > 0) {
+        while (values[head] < 1) {
+          values[head] *= 10;
+          minZeros++;
+        }
+        break;
+      }
+    }
+
+    for (tail = values.length - 1; tail >= 0; tail--) {
+      if (values[tail] > 0) {
+        while (values[tail] < 1) {
+          values[tail] *= 10;
+          maxZeros++;
+        }
+        break;
+      }
+    }
+
+    if(head <= tail){
+      for(var i = maxZeros;i <= minZeros; i++){
+        expoents.push(-i);
+      }
+    }
+    
+    return expoents;
+    
+  }
+
   return {
     toPrecision: toPrecision,
     getObjectLength: getObjectLength,
@@ -696,7 +756,8 @@ cbio.util = (function() {
     findExtremes: findExtremes,
     deepCopyObject: deepCopyObject,
     makeCachedPromiseFunction: makeCachedPromiseFunction,
-    getDatahubStudiesList: getDatahubStudiesList
+    getDatahubStudiesList: getDatahubStudiesList,
+    getDecimalExponents: getDecimalExponents
   };
 
 })();
@@ -716,7 +777,6 @@ if (!Array.prototype.forEach) {
     }
   };
 }
-
 
 if (cbio === undefined)
 {
@@ -2556,118 +2616,9 @@ window.EnhancedFixedDataTableSpecial = (function() {
 window.DataManagerForIviz = (function($, _) {
   var content = {};
 
-  // Clinical attributes will be transfered into table.
+  // Clinical attributes will be transferred into table.
   var configs_;
   content.util = {};
-
-
-  /**
-   * General pick clinical attributes based on predesigned Regex
-   * This filter is the same one which used in previous Google Charts Version,
-   * should be revised later.
-   *
-   * @param {string} attr Clinical attribute ID.
-   * @return {boolean} Whether input attribute passed the criteria.
-   */
-  content.util.isPreSelectedClinicalAttr = function(attr) {
-    return attr.toLowerCase().match(/(os_survival)|(dfs_survival)|(mut_cnt_vs_cna)|(mutated_genes)|(cna_details)|(^age)|(gender)|(sex)|(os_status)|(os_months)|(dfs_status)|(dfs_months)|(race)|(ethnicity)|(sample_type)|(.*site.*)|(.*grade.*)|(.*stage.*)|(histology)|(tumor_type)|(subtype)|(tumor_site)|(mutation_count)|(copy_number_alterations)/);
-  };
-
-  /**
-   * Compare based on data availability.
-   * Notice that: attribute with only one category will be moved to end.
-   * Number of keys in this attribute is more than half numOfDatum
-   * will be moved to end as well.
-   *
-   * @param {object} a Attribute meta item A.
-   * @param {object} b Attribute meta item B.
-   * @return {number} Indicator which item is selected.
-   */
-  content.util.compareClinicalAvailability = function(a, b) {
-    if (!a.keys || !a.numOfDatum) {
-      return 1;
-    }
-    if (!b.keys || !b.numOfDatum) {
-      return -1;
-    }
-
-    var numOfKeysA = Object.keys(a.keys).length;
-    var numOfKeysB = Object.keys(b.keys).length;
-    if (numOfKeysA === 1 && numOfKeysB !== 1) {
-      return 1;
-    }
-    if (numOfKeysA !== 1 && numOfKeysB === 1) {
-      return -1;
-    }
-
-    if (numOfKeysA / a.numOfDatum > 0.5 && numOfKeysB / b.numOfDatum <= 0.5) {
-      return 1;
-    }
-    if (numOfKeysA / a.numOfDatum <= 0.5 && numOfKeysB / b.numOfDatum > 0.5) {
-      return -1;
-    }
-
-    return b.numOfDatum - a.numOfDatum;
-  };
-
-  /**
-   * There are few steps to determine the priority.
-   * Step 1: whether it is in clinAttrs_.general.priority list
-   * Step 2: whether it will pass preSelectedAttr Regex check
-   * Step 3: Sort the rest based on data availability. Notice that: at this
-   * Step, attribute with only one category will be moved to end. Number of
-   * keys in this attribute is more than half numOfDatum will be moved to end
-   * as well.
-   *
-   * @param {array} array All clinical attributes.
-   * @return {array} Sorted clinical attributes.
-   */
-  content.util.sortClinicalAttrs = function(array) {
-    array = array.sort(function(a, b) {
-      return compareClinicalAttrs(a, b);
-    });
-    return array;
-  };
-
-  function compareClinicalAttrs(a, b) {
-    var priority = 0;
-
-    if (content.util.isPreSelectedClinicalAttr(a.attr_id)) {
-      if (content.util.isPreSelectedClinicalAttr(b.attr_id)) {
-        priority = content.util.compareClinicalAvailability(a, b);
-      } else {
-        priority = -1;
-      }
-    } else if (content.util.isPreSelectedClinicalAttr(b.attr_id)) {
-      priority = 1;
-    } else {
-      priority = 0;
-    }
-
-    if (priority !== 0) {
-      return priority;
-    }
-
-    return content.util.compareClinicalAvailability(a, b);
-  };
-
-  /**
-   * Sort clinical attributes by priority.
-   * @param {array} array Clinical attributes.
-   * @return {array} Sorted clinical attributes.
-   */
-  content.util.sortByClinicalPriority = function(array) {
-    if (_.isArray(array)) {
-      array = array.sort(function(a, b) {
-        var score = iViz.priorityManager.comparePriorities(a.priority, b.priority, false);
-        if (score === 0) {
-          score = compareClinicalAttrs(a, b);
-        }
-        return score;
-      });
-    }
-    return array;
-  };
 
   content.util.pxStringToNumber = function(_str) {
     var result;
@@ -2709,6 +2660,29 @@ window.DataManagerForIviz = (function($, _) {
     return result;
   };
 
+  /**
+   * Normalize clinical data type to all uppercaes.
+   * If data type is not STRING or NUMBER, convert it to STRING
+   *
+   * @param {string} datatype
+   * @return {string}
+   */
+  content.util.normalizeDataType = function(datatype) {
+    var invalid = false;
+    if (_.isString(datatype)) {
+      datatype = datatype.toUpperCase();
+      if (['STRING', 'NUMBER'].indexOf(datatype) === -1) {
+        invalid = true;
+      }
+    } else {
+      invalid = true;
+    }
+    if (invalid) {
+      datatype = 'STRING';
+    }
+    return datatype;
+  };
+
   content.init = function(_portalUrl, _study_cases_map) {
     var initialSetup = function() {
       var _def = new $.Deferred();
@@ -2718,7 +2692,7 @@ window.DataManagerForIviz = (function($, _) {
           $.when(self.getGeneticProfiles(), self.getCaseLists(),
             self.getClinicalAttributesByStudy())
             .then(function(_geneticProfiles, _caseLists,
-              _clinicalAttributes) {
+                           _clinicalAttributes) {
               var _result = {};
               var _patientData = [];
               var _sampleAttributes = {};
@@ -2800,7 +2774,7 @@ window.DataManagerForIviz = (function($, _) {
               addAttr({
                 attr_id: 'sequenced',
                 display_name: 'With Mutation Data',
-                description: 'If the sample got sequenced'
+                description: 'If the sample has mutation data'
               }, 'sample');
 
               addAttr({
@@ -2821,6 +2795,7 @@ window.DataManagerForIviz = (function($, _) {
                 _metaObj.filter = [];
                 _metaObj.keys = {};
                 _metaObj.numOfDatum = 0;
+                _metaObj.addChartBy = 'default';
                 if (!_.isArray(_metaObj.priority)) {
                   iViz.priorityManager
                     .setClinicalAttrPriority(_metaObj.attr_id, Number(_metaObj.priority));
@@ -2830,6 +2805,7 @@ window.DataManagerForIviz = (function($, _) {
                 }
                 _metaObj.show = _metaObj.priority !== 0;
                 _metaObj.attrList = [_metaObj.attr_id];
+                _metaObj.datatype = content.util.normalizeDataType(_metaObj.datatype);
                 if (_metaObj.datatype === 'NUMBER') {
                   _metaObj.view_type = 'bar_chart';
                   _metaObj.layout = [-1, 2, 'h'];
@@ -2855,24 +2831,25 @@ window.DataManagerForIviz = (function($, _) {
               });
               _.each(_patientAttributes, function(_metaObj) {
                 switch (_metaObj.attr_id) {
-                  case 'DFS_STATUS':
-                    _hasDfsStatus = true;
-                    break;
-                  case 'DFS_MONTHS':
-                    _hasDfsMonths = true;
-                    break;
-                  case 'OS_STATUS':
-                    _hasOsStatus = true;
-                    break;
-                  case 'OS_MONTHS':
-                    _hasOsMonths = true;
-                    break;
-                  default :
-                    break;
+                case 'DFS_STATUS':
+                  _hasDfsStatus = true;
+                  break;
+                case 'DFS_MONTHS':
+                  _hasDfsMonths = true;
+                  break;
+                case 'OS_STATUS':
+                  _hasOsStatus = true;
+                  break;
+                case 'OS_MONTHS':
+                  _hasOsMonths = true;
+                  break;
+                default :
+                  break;
                 }
                 _metaObj.filter = [];
                 _metaObj.keys = {};
                 _metaObj.numOfDatum = 0;
+                _metaObj.addChartBy = 'default';
                 if (!_.isArray(_metaObj.priority)) {
                   iViz.priorityManager
                     .setClinicalAttrPriority(_metaObj.attr_id, Number(_metaObj.priority));
@@ -2882,6 +2859,7 @@ window.DataManagerForIviz = (function($, _) {
                 }
                 _metaObj.show = _metaObj.priority !== 0;
                 _metaObj.attrList = [_metaObj.attr_id];
+                _metaObj.datatype = content.util.normalizeDataType(_metaObj.datatype);
                 if (_metaObj.datatype === 'NUMBER') {
                   _metaObj.view_type = 'bar_chart';
                   _metaObj.layout = [-1, 2, 'h'];
@@ -2983,6 +2961,7 @@ window.DataManagerForIviz = (function($, _) {
                   'cBioPortal cancer genes</a> in the cohort.';
                 _cnaAttrMeta.attr_id = 'cna_details';
                 _cnaAttrMeta.filter = [];
+                _cnaAttrMeta.addChartBy = 'default';
                 _cnaAttrMeta.keys = {};
                 _cnaAttrMeta.numOfDatum = 0;
                 _cnaAttrMeta.priority =
@@ -3012,6 +2991,7 @@ window.DataManagerForIviz = (function($, _) {
                   'gene with 2 or more mutations';
                 _mutDataAttrMeta.attr_id = 'mutated_genes';
                 _mutDataAttrMeta.filter = [];
+                _mutDataAttrMeta.addChartBy = 'default';
                 _mutDataAttrMeta.keys = {};
                 _mutDataAttrMeta.numOfDatum = 0;
                 _mutDataAttrMeta.priority =
@@ -3035,6 +3015,7 @@ window.DataManagerForIviz = (function($, _) {
                 _dfsSurvivalAttrMeta.description = '';
                 _dfsSurvivalAttrMeta.display_name = 'Disease Free Survival';
                 _dfsSurvivalAttrMeta.filter = [];
+                _dfsSurvivalAttrMeta.addChartBy = 'default';
                 _dfsSurvivalAttrMeta.keys = {};
                 _dfsSurvivalAttrMeta.numOfDatum = 0;
                 _dfsSurvivalAttrMeta.priority =
@@ -3054,6 +3035,7 @@ window.DataManagerForIviz = (function($, _) {
                 _osSurvivalAttrMeta.description = '';
                 _osSurvivalAttrMeta.display_name = 'Overall Survival';
                 _osSurvivalAttrMeta.filter = [];
+                _osSurvivalAttrMeta.addChartBy = 'default';
                 _osSurvivalAttrMeta.keys = {};
                 _osSurvivalAttrMeta.numOfDatum = 0;
                 _osSurvivalAttrMeta.priority =
@@ -3079,6 +3061,7 @@ window.DataManagerForIviz = (function($, _) {
                   numOfDatum: 0,
                   priority: iViz.priorityManager.getDefaultPriority(_id),
                   show: true,
+                  addChartBy: 'default',
                   attrList: [_id]
                 };
                 _patientAttributes.study_id.show = _patientAttributes.study_id.priority !== 0;
@@ -3099,7 +3082,8 @@ window.DataManagerForIviz = (function($, _) {
                   attrList: [_id],
                   keys: [],
                   numOfDatum: 0,
-                  show: true
+                  show: true,
+                  addChartBy: 'default'
                 };
                 _sampleAttributes.copy_number_alterations.show = _sampleAttributes.copy_number_alterations.priority !== 0;
               }
@@ -3111,107 +3095,74 @@ window.DataManagerForIviz = (function($, _) {
                   studyMap: _studyToSampleToPatientMap
                 },
                 patient: {
-                  attr_meta: content.util
+                  attr_meta: self
                     .sortByClinicalPriority(_.values(_patientAttributes)),
                   data: _patientData,
                   has_attr_data: _hasPatientAttrData
                 },
                 sample: {
-                  attr_meta: content.util
+                  attr_meta: self
                     .sortByClinicalPriority(_.values(_sampleAttributes)),
                   data: _sampleData,
                   has_attr_data: _hasSampleAttrData
                 }
               };
 
-              $.when(self.getCnaFractionData(),
-                self.getMutationCount())
-                .then(function(_cnaFractionData, _mutationCountData) {
-                  var _hasCNAFractionData = _.keys(_cnaFractionData).length > 0;
-                  var _hasMutationCountData = _.keys(_mutationCountData).length > 0;
+              // add Mutation count vs. CNA fraction
+              _hasSampleAttrData.copy_number_alterations = '';
+              _hasSampleAttrData.cna_fraction = '';
+              var _mutCntAttrMeta = {};
+              _mutCntAttrMeta.attr_id = 'MUT_CNT_VS_CNA';
+              _mutCntAttrMeta.datatype = 'SCATTER_PLOT';
+              _mutCntAttrMeta.view_type = 'scatter_plot';
+              _mutCntAttrMeta.layout = [-1, 4];
+              _mutCntAttrMeta.description = '';
+              _mutCntAttrMeta.display_name = 'Mutation Count vs. CNA';
+              _mutCntAttrMeta.filter = [];
+              _mutCntAttrMeta.keys = {};
+              _mutCntAttrMeta.numOfDatum = 0;
+              _mutCntAttrMeta.priority =
+                iViz.priorityManager
+                  .getDefaultPriority('MUT_CNT_VS_CNA', true);
+              _mutCntAttrMeta.show = _mutCntAttrMeta.priority !== 0;
+              _mutCntAttrMeta.addChartBy = 'default';
+              _mutCntAttrMeta.attrList = ['mutation_count', 'cna_fraction'];
+              // This attribute is used for getScatterData()
+              // This should not be added into attribute meta and should be saved into main.js 
+              // (Centralized place storing all data for sharing across directives)
+              // This needs to be updated after merging into virtual study branch
+              _mutCntAttrMeta.sequencedCaseUIdsMap = _sequencedCaseUIdsMap;
+              _sampleAttributes[_mutCntAttrMeta.attr_id] = _mutCntAttrMeta;
 
-                  _.each(_result.groups.sample.data, function(_sampleDatum) {
-                    // mutation count
-                    if (_hasMutationCountData) {
-                      _hasSampleAttrData.mutation_count = '';
-                      if (_mutationCountData[_sampleDatum.study_id] === undefined ||
-                        _mutationCountData[_sampleDatum.study_id][_sampleDatum.sample_id] === undefined ||
-                        _mutationCountData[_sampleDatum.study_id][_sampleDatum.sample_id] === null) {
-                        if (_sequencedCaseUIdsMap[_sampleDatum.sample_uid] === undefined) {
-                          _sampleDatum.mutation_count = 'NA';
-                        } else {
-                          _sampleDatum.mutation_count = 0;
-                        }
-                      } else {
-                        _sampleDatum.mutation_count = _mutationCountData[_sampleDatum.study_id][_sampleDatum.sample_id];
-                      }
-                    }
-                    // cna fraction
-                    if (_hasCNAFractionData) {
-                      _hasSampleAttrData.copy_number_alterations = '';
-                      _hasSampleAttrData.cna_fraction = '';
-                      if (_cnaFractionData[_sampleDatum.study_id] === undefined ||
-                        _cnaFractionData[_sampleDatum.study_id][_sampleDatum.sample_id] === undefined ||
-                        _cnaFractionData[_sampleDatum.study_id][_sampleDatum.sample_id] === null) {
-                        _sampleDatum.cna_fraction = 'NA';
-                        _sampleDatum.copy_number_alterations = 'NA';
-                      } else {
-                        _sampleDatum.cna_fraction = _cnaFractionData[_sampleDatum.study_id][_sampleDatum.sample_id];
-                        _sampleDatum.copy_number_alterations = _cnaFractionData[_sampleDatum.study_id][_sampleDatum.sample_id];
-                      }
-                    }
-                  });
+              // add mutation count
+              _hasSampleAttrData.mutation_count = '';
+              var _MutationCountMeta = {};
+              _MutationCountMeta.datatype = 'NUMBER';
+              _MutationCountMeta.description = '';
+              _MutationCountMeta.display_name = 'Mutation Count';
+              _MutationCountMeta.attr_id = 'mutation_count';
+              _MutationCountMeta.view_type = 'bar_chart';
+              _MutationCountMeta.layout = [-1, 2, 'h'];
+              _MutationCountMeta.filter = [];
+              _MutationCountMeta.keys = {};
+              _MutationCountMeta.numOfDatum = 0;
+              _MutationCountMeta.priority =
+                iViz.priorityManager
+                  .getDefaultPriority(_MutationCountMeta.attr_id);
+              _MutationCountMeta.show = _MutationCountMeta.priority !== 0;
+              _MutationCountMeta.addChartBy = 'default';
+              _MutationCountMeta.attrList = [_MutationCountMeta.attr_id];
+              // This attribute is used for getMutationCountData()
+              _MutationCountMeta.sequencedCaseUIdsMap = _sequencedCaseUIdsMap;
+              _sampleAttributes[_MutationCountMeta.attr_id] = _MutationCountMeta;
 
-                  // add Mutation count vs. CNA fraction
-                  if (_hasSampleAttrData.mutation_count !== undefined && _hasSampleAttrData.cna_fraction !== undefined) {
-                    var _mutCntAttrMeta = {};
-                    _mutCntAttrMeta.attr_id = 'MUT_CNT_VS_CNA';
-                    _mutCntAttrMeta.datatype = 'SCATTER_PLOT';
-                    _mutCntAttrMeta.view_type = 'scatter_plot';
-                    _mutCntAttrMeta.layout = [-1, 4],
-                    _mutCntAttrMeta.description = '';
-                    _mutCntAttrMeta.display_name = 'Mutation Count vs. CNA';
-                    _mutCntAttrMeta.filter = [];
-                    _mutCntAttrMeta.keys = {};
-                    _mutCntAttrMeta.numOfDatum = 0;
-                    _mutCntAttrMeta.priority =
-                      iViz.priorityManager
-                        .getDefaultPriority('MUT_CNT_VS_CNA', true);
-                    _mutCntAttrMeta.show = _mutCntAttrMeta.priority !== 0;
-                    _mutCntAttrMeta.attrList = ['mutation_count', 'cna_fraction'];
-                    _sampleAttributes[_mutCntAttrMeta.attr_id] = _mutCntAttrMeta;
-                  }
+              _result.groups.patient.attr_meta =
+                self.sortByClinicalPriority(_.values(_patientAttributes));
+              _result.groups.sample.attr_meta =
+                self.sortByClinicalPriority(_.values(_sampleAttributes));
 
-                  // add mutation count
-                  if (_hasSampleAttrData.mutation_count !== undefined) {
-                    var _MutationCountMeta = {};
-                    _MutationCountMeta.datatype = 'NUMBER';
-                    _MutationCountMeta.description = '';
-                    _MutationCountMeta.display_name = 'Mutation Count';
-                    _MutationCountMeta.attr_id = 'mutation_count';
-                    _MutationCountMeta.view_type = 'bar_chart';
-                    _MutationCountMeta.layout = [-1, 2, 'h'];
-                    _MutationCountMeta.filter = [];
-                    _MutationCountMeta.keys = {};
-                    _MutationCountMeta.numOfDatum = 0;
-                    _MutationCountMeta.priority =
-                      iViz.priorityManager
-                        .getDefaultPriority(_MutationCountMeta.attr_id);
-                    _MutationCountMeta.show = _MutationCountMeta.priority !== 0;
-                    _MutationCountMeta.attrList = [_MutationCountMeta.attr_id];
-                    _sampleAttributes[_MutationCountMeta.attr_id] = _MutationCountMeta;
-                  }
-
-                  _result.groups.patient.attr_meta =
-                    content.util
-                      .sortByClinicalPriority(_.values(_patientAttributes));
-                  _result.groups.sample.attr_meta =
-                    content.util
-                      .sortByClinicalPriority(_.values(_sampleAttributes));
-
-                  self.initialSetupResult = _result;
-                  _def.resolve(_result);
-                });
+              self.initialSetupResult = _result;
+              _def.resolve(_result);
             });
         });
       });
@@ -3442,12 +3393,12 @@ window.DataManagerForIviz = (function($, _) {
                 configs.styles.vars.borderWidth = 2;
                 configs.styles.vars.scatter = {
                   width: (
-                  configs.styles.vars.width.two -
-                  configs.styles.vars.borderWidth) || 400,
+                    configs.styles.vars.width.two -
+                    configs.styles.vars.borderWidth) || 400,
                   height: (
-                  configs.styles.vars.height.two -
-                  configs.styles.vars.chartHeader -
-                  configs.styles.vars.borderWidth) || 350
+                    configs.styles.vars.height.two -
+                    configs.styles.vars.chartHeader -
+                    configs.styles.vars.borderWidth) || 350
                 };
                 configs.styles.vars.survival = {
                   width: configs.styles.vars.scatter.width,
@@ -3463,12 +3414,12 @@ window.DataManagerForIviz = (function($, _) {
                 };
                 configs.styles.vars.barchart = {
                   width: (
-                  configs.styles.vars.width.two -
-                  configs.styles.vars.borderWidth) || 400,
+                    configs.styles.vars.width.two -
+                    configs.styles.vars.borderWidth) || 400,
                   height: (
-                  configs.styles.vars.height.one -
-                  configs.styles.vars.chartHeader * 2 -
-                  configs.styles.vars.borderWidth) || 130
+                    configs.styles.vars.height.one -
+                    configs.styles.vars.chartHeader * 2 -
+                    configs.styles.vars.borderWidth) || 130
                 };
                 configs_ = configs;
                 fetch_promise.resolve(configs);
@@ -3597,7 +3548,7 @@ window.DataManagerForIviz = (function($, _) {
               var patient_to_uid = {};
               var uid_to_patient = {};
               var resultMap = {};
-              var patientList = [];
+              var patientList = {};
               for (var i = 0; i < data.length; i++) {
                 uid_to_sample[_sample_uid] = data[i].id;
                 sample_to_uid[data[i].id] = _sample_uid.toString();
@@ -3612,14 +3563,14 @@ window.DataManagerForIviz = (function($, _) {
                 patient_to_sample[data[i].patient_id][data[i].id] = 1;
                 sample_to_patient[data[i].id] = data[i].patient_id;
                 sample_uid_to_patient_uid[_sample_uid] = patient_to_uid[data[i].patient_id];
-                patientList.push(data[i].patient_id);
+                patientList[data[i].patient_id] = 1;
                 _sample_uid++;
               }
               // set patient list in studyCasesMap if sample list is
               // passed in the input
               if (_.isArray(self.studyCasesMap[cancerStudyId].samples) &&
                 self.studyCasesMap[cancerStudyId].samples.length > 0) {
-                self.studyCasesMap[cancerStudyId].patients = _.unique(patientList);
+                self.studyCasesMap[cancerStudyId].patients = Object.keys(patientList);
               }
               resultMap.uid_to_sample = uid_to_sample;
               resultMap.uid_to_patient = uid_to_patient;
@@ -4007,6 +3958,117 @@ window.DataManagerForIviz = (function($, _) {
           _map[_gene].sample_num = _sampleNumPerGene;
         });
         return _map;
+      },
+
+      /**
+       * General pick clinical attributes based on predesigned Regex
+       * This filter is the same one which used in previous Google Charts Version,
+       * should be revised later.
+       *
+       * @param {string} attr Clinical attribute ID.
+       * @return {boolean} Whether input attribute passed the criteria.
+       */
+      isPreSelectedClinicalAttr: function(attr) {
+        return attr.toLowerCase().match(/(os_survival)|(dfs_survival)|(mut_cnt_vs_cna)|(mutated_genes)|(cna_details)|(^age)|(gender)|(sex)|(os_status)|(os_months)|(dfs_status)|(dfs_months)|(race)|(ethnicity)|(sample_type)|(.*site.*)|(.*grade.*)|(.*stage.*)|(histology)|(tumor_type)|(subtype)|(tumor_site)|(mutation_count)|(copy_number_alterations)/);
+      },
+
+      /**
+       * Compare based on data availability.
+       * Notice that: attribute with only one category will be moved to end.
+       * Number of keys in this attribute is more than half numOfDatum
+       * will be moved to end as well.
+       *
+       * @param {object} a Attribute meta item A.
+       * @param {object} b Attribute meta item B.
+       * @return {number} Indicator which item is selected.
+       */
+      compareClinicalAvailability: function(a, b) {
+        if (!a.keys || !a.numOfDatum) {
+          return 1;
+        }
+        if (!b.keys || !b.numOfDatum) {
+          return -1;
+        }
+
+        var numOfKeysA = Object.keys(a.keys).length;
+        var numOfKeysB = Object.keys(b.keys).length;
+        if (numOfKeysA === 1 && numOfKeysB !== 1) {
+          return 1;
+        }
+        if (numOfKeysA !== 1 && numOfKeysB === 1) {
+          return -1;
+        }
+
+        if (numOfKeysA / a.numOfDatum > 0.5 && numOfKeysB / b.numOfDatum <= 0.5) {
+          return 1;
+        }
+        if (numOfKeysA / a.numOfDatum <= 0.5 && numOfKeysB / b.numOfDatum > 0.5) {
+          return -1;
+        }
+
+        return b.numOfDatum - a.numOfDatum;
+      },
+
+      /**
+       * There are few steps to determine the priority.
+       * Step 1: whether it is in clinAttrs_.general.priority list
+       * Step 2: whether it will pass preSelectedAttr Regex check
+       * Step 3: Sort the rest based on data availability. Notice that: at this
+       * Step, attribute with only one category will be moved to end. Number of
+       * keys in this attribute is more than half numOfDatum will be moved to end
+       * as well.
+       *
+       * @param {array} array All clinical attributes.
+       * @return {array} Sorted clinical attributes.
+       */
+      sortClinicalAttrs: function(array) {
+        var self = this;
+        array = array.sort(function(a, b) {
+          return self.compareClinicalAttrs(a, b);
+        });
+        return array;
+      },
+
+      compareClinicalAttrs: function(a, b) {
+        var priority = 0;
+        var self = this;
+
+        if (self.isPreSelectedClinicalAttr(a.attr_id)) {
+          if (self.isPreSelectedClinicalAttr(b.attr_id)) {
+            priority = self.compareClinicalAvailability(a, b);
+          } else {
+            priority = -1;
+          }
+        } else if (self.isPreSelectedClinicalAttr(b.attr_id)) {
+          priority = 1;
+        } else {
+          priority = 0;
+        }
+
+        if (priority !== 0) {
+          return priority;
+        }
+
+        return self.compareClinicalAvailability(a, b);
+      },
+
+      /**
+       * Sort clinical attributes by priority.
+       * @param {array} array Clinical attributes.
+       * @return {array} Sorted clinical attributes.
+       */
+      sortByClinicalPriority: function(array) {
+        var self = this;
+        if (_.isArray(array)) {
+          array = array.sort(function(a, b) {
+            var score = iViz.priorityManager.comparePriorities(a.priority, b.priority, false);
+            if (score === 0) {
+              score = self.compareClinicalAttrs(a, b);
+            }
+            return score;
+          });
+        }
+        return array;
       }
     };
   };
