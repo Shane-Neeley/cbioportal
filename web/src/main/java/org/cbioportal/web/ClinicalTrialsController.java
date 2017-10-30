@@ -62,7 +62,7 @@ public class ClinicalTrialsController {
     public String getMolecularMatchClinicalTrials(@RequestBody String filters, HttpMethod method) throws
         URISyntaxException {
 
-        String apiKey = "539188c9-0516-47c4-b3a6-98b4b5524dc8";
+        String apiKey = "27eb2ee8-b420-4700-815b-6ec3d579eac0";
 
         try {
             JSONArray filtersArr = (JSONArray) new JSONParser().parse(filters);
