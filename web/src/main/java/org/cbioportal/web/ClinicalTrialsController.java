@@ -63,6 +63,8 @@ public class ClinicalTrialsController {
         URISyntaxException {
 
         String apiKey = "27eb2ee8-b420-4700-815b-6ec3d579eac0";
+        
+        System.out.println("in here! getMolecularMatchClinicalTrials");
 
         try {
             JSONArray filtersArr = (JSONArray) new JSONParser().parse(filters);
